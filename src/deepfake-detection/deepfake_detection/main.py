@@ -14,6 +14,7 @@ from rb.api.models import (
     TaskSchema,
     ParameterSchema,
     EnumParameterDescriptor,
+    # TextParameterDescriptor,
     EnumVal,
     ParameterType,
 )
@@ -24,6 +25,7 @@ from deepfake_detection.process.transformerDima_onnx_process import (
     TransformerModelDimaONNX,
 )
 from deepfake_detection.process.resnet50 import Resnet50ModelONNX
+import onnxruntime as ort
 from random import randint
 import os
 from deepfake_detection.sim_data import defaultDataset
@@ -63,6 +65,7 @@ def create_transform_case_task_schema() -> TaskSchema:
         value=EnumParameterDescriptor(
             parameter_type=ParameterType.ENUM,
             enum_vals=[
+                EnumVal(key="all", label="all"),
                 EnumVal(key="BNext_M_ModelONNX", label="BNext_M_ModelONNX"),
                 EnumVal(key="BNext_S_ModelONNX", label="BNext_S_ModelONNX"),
                 EnumVal(key="TransformerModelONNX", label="TransformerModelONNX"),
@@ -75,8 +78,26 @@ def create_transform_case_task_schema() -> TaskSchema:
             message_when_empty="Select the models to use for prediction, default is all.",
         ),
     )
+    facecrop_schema = ParameterSchema(
+        key="facecrop",
+        label="Enable face cropping? (true/false)",
+        # input_type=InputType.TEXT,
+        value=EnumParameterDescriptor(
+            parameter_type=ParameterType.ENUM,
+            enum_vals=[
+                EnumVal(key="true", label="true"),
+                EnumVal(key="false", label="false"),
+            ],
+            default="false",
+            message_when_empty="Select if you want facecropping. Default is false.",
+        ),
+        # value=TextParameterDescriptor(default="false"),
+    )
 
-    return TaskSchema(inputs=[input_schema, output_schema], parameters=[models_schema])
+    return TaskSchema(
+        inputs=[input_schema, output_schema],
+        parameters=[models_schema, facecrop_schema],
+    )
 
 
 # Specify the input and output types for the task
@@ -87,9 +108,10 @@ class Inputs(TypedDict):
 
 class Parameters(TypedDict):
     models: str
+    facecrop: str
 
 
-def run_models(models, dataset):
+def run_models(models, dataset, facecrop=None):
     print("run_models called")
     results = []
     for model in models:
@@ -103,8 +125,8 @@ def run_models(models, dataset):
             image = sample["image"]
             image_path = sample["image_path"]
 
-            # Preprocess, predict, postprocess
-            preprocessed_image = model.preprocess(image)
+            # Preprocess, predict, postprocess (with optional face crop)
+            preprocessed_image = model.preprocess(image, facecrop=facecrop)
             prediction = model.predict(preprocessed_image)
             processed_prediction = model.postprocess(prediction)
 
@@ -146,13 +168,14 @@ def cli_parser(input: str) -> Inputs:
     }
 
 
-def param_parser(models: str) -> Parameters:
+def param_parser(models: str, facecrop: str = "false") -> Parameters:
     print("param_parser called")
     if models == "all":
         models = "BNext_M_ModelONNX,BNext_S_ModelONNX,TransformerModelONNX,TransformerModelDimaONNX, Resnet50ModelONNX"
 
     return {
         "models": models,
+        "facecrop": facecrop,
     }
 
 
@@ -168,7 +191,7 @@ def give_prediction(inputs: Inputs, parameters: Parameters) -> ResponseBody:
     out = Path(inputs["output_file"].path)
     selected_models = parameters.get("models", "all")
     if selected_models == "all":
-        selected_models = "BNext_M_ModelONNX,BNext_S_ModelONNX,TransformerModelONNX,TransformerModelDimaONNX, Resnet50ModelONNX"
+        selected_models = "BNext_M_ModelONNX,BNext_S_ModelONNX,TransformerModelONNX,TransformerModelDimaONNX,Resnet50ModelONNX"
     selected_models = selected_models.split(",")
 
     logger.info(f"Input path: {input_path}")
@@ -190,8 +213,20 @@ def give_prediction(inputs: Inputs, parameters: Parameters) -> ResponseBody:
     out.mkdir(parents=True, exist_ok=True)
     out = out / f"predictions_{randint(0, 999)}.csv"
 
+    # Initialize face cropper if requested
+    facecropper = None
+    facecrop_param = parameters.get("facecrop", "false").lower()
+    if facecrop_param in ("true", "1", "yes"):  # enable face cropping
+        try:
+            model_dir = Path(__file__).resolve().parent / "onnx_models"
+            facecropper = ort.InferenceSession(
+                str(model_dir / "face_detector.onnx"),
+                providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+            )
+        except Exception as e:
+            logger.warning(f"Error loading face detector: {e}")
     dataset = defaultDataset(dataset_path=input_path, resolution=224)
-    res_list = run_models(active_models, dataset)
+    res_list = run_models(active_models, dataset, facecrop=facecropper)
     logger.info(f"Results list: {res_list}")
     # Prepare model data structure
     model_data = []
