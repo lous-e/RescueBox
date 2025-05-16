@@ -26,11 +26,11 @@ from deepfake_detection.process.transformerDima_onnx_process import (
 )
 from deepfake_detection.process.resnet50 import Resnet50ModelONNX
 import onnxruntime as ort
-from random import randint
 import os
 from deepfake_detection.sim_data import defaultDataset
 from collections import defaultdict
 import logging
+from datetime import datetime
 
 logging.basicConfig(
     level=logging.INFO,
@@ -211,7 +211,10 @@ def give_prediction(inputs: Inputs, parameters: Parameters) -> ResponseBody:
     logger.info(f"Active models: {[m.__class__.__name__ for m in active_models]}")
     # Need logic to verify that the random num is not already in the directory *******
     out.mkdir(parents=True, exist_ok=True)
-    out = out / f"predictions_{randint(0, 999)}.csv"
+
+    now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+    out = out / f"predictions_{now}.csv"
 
     # Initialize face cropper if requested
     facecropper = None
@@ -287,11 +290,15 @@ def give_prediction(inputs: Inputs, parameters: Parameters) -> ResponseBody:
 # Create a server instance
 server = MLService(APP_NAME)
 
+info_file_path = Path(__file__).resolve().parent / "img-app-info.md"
+with open(info_file_path, "r", encoding="utf-8") as f:
+    app_info = f.read()
+
 server.add_app_metadata(
     name="Image DeepFake Detector",
     author="UMass Rescue",
     version="0.2.0",
-    info="Detects deepfake images using various models. Supports BNext_M, BNext_S, Transformer, and TransformerDima models.",
+    info=app_info,
     plugin_name=APP_NAME,
 )
 
